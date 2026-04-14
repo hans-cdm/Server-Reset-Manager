@@ -67,9 +67,25 @@ async function getServerStatus(page) {
 }
 
 async function navigateToWorld(page) {
-  addLog(`Navigating to world: ${WORLD_NAME}...`);
-  await page.goto(`${SEEDLOAF_URL}/dashboard/${WORLD_NAME}`, { waitUntil: 'networkidle', timeout: 30000 });
+  addLog(`Navigating to dashboard to find world: ${WORLD_NAME}...`);
+  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'networkidle', timeout: 30000 });
   await page.waitForTimeout(2000);
+  await page.screenshot({ path: '/tmp/seedloaf-dashboard.png' });
+
+  const worldLink = page.locator(`a:has-text("${WORLD_NAME}"), [href*="${WORLD_NAME}"]`).first();
+  if (await worldLink.isVisible({ timeout: 5000 }).catch(() => false)) {
+    addLog(`Found world link, clicking...`);
+    await worldLink.click();
+    await page.waitForLoadState('networkidle', { timeout: 15000 });
+  } else {
+    addLog(`World link not found by name, dumping page URL: ${page.url()}`, 'warn');
+    const html = await page.content();
+    const links = html.match(/href="[^"]*"/g) || [];
+    addLog(`Page links: ${links.slice(0, 20).join(', ')}`, 'info');
+  }
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: '/tmp/seedloaf-world.png' });
+  addLog(`Current URL: ${page.url()}`);
 }
 
 async function clickButton(page, labels) {
@@ -96,7 +112,10 @@ async function clickButton(page, labels) {
 
 async function stopServer(page) {
   addLog('Attempting to stop server...');
-  const clicked = await clickButton(page, ['Stop', 'Stop Server', 'Turn Off', 'Shutdown', 'Kill']);
+  const pageContent = await page.content();
+  const buttons = pageContent.match(/<button[^>]*>([^<]*)<\/button>/gi) || [];
+  addLog(`Buttons on page: ${buttons.slice(0, 10).join(' | ')}`, 'info');
+  const clicked = await clickButton(page, ['Stop', 'Stop Server', 'Turn Off', 'Shutdown', 'Kill', 'Power Off', 'Restart', 'Delete', 'Terminate', 'Pause']);
   if (clicked) {
     addLog(`Server stop command sent ("${clicked}")`, 'success');
     await page.waitForTimeout(5000);
