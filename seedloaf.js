@@ -39,26 +39,67 @@ async function launchBrowser() {
   });
 }
 
-async function signIn(page) {
-  addLog('Navigating to Seedloaf login...');
-  await page.goto('https://accounts.seedloaf.com/sign-in', { waitUntil: 'load', timeout: 45000 });
+async function signInWithCookie(context) {
+  const sessionCookie = process.env.SEEDLOAF_SESSION_COOKIE;
+  if (!sessionCookie) return false;
 
-  addLog('Waiting for Cloudflare challenge to pass...');
-  for (let i = 0; i < 12; i++) {
-    await page.waitForTimeout(3000);
-    const title = await page.title();
-    addLog(`Page title (${i * 3}s): ${title}`);
-    if (!title.includes('Just a moment') && !title.includes('Checking')) break;
-  }
+  addLog('Using saved session cookie to authenticate...');
+  await context.addCookies([
+    {
+      name: '__session',
+      value: sessionCookie,
+      domain: 'seedloaf.com',
+      path: '/',
+      httpOnly: true,
+      secure: true,
+      sameSite: 'None',
+    },
+    {
+      name: '__session',
+      value: sessionCookie,
+      domain: '.seedloaf.com',
+      path: '/',
+      httpOnly: true,
+      secure: true,
+      sameSite: 'None',
+    },
+  ]);
+  return true;
+}
+
+async function signIn(page, context) {
+  const usedCookie = await signInWithCookie(context);
+
+  addLog('Navigating to Seedloaf dashboard...');
+  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'load', timeout: 45000 });
+  await page.waitForTimeout(3000);
   await page.screenshot({ path: '/tmp/seedloaf-login.png' });
-  addLog(`Login page URL: ${page.url()}`);
-  const finalTitle = await page.title();
-  addLog(`Final page title: ${finalTitle}`);
 
-  addLog('Waiting for login form to render...');
-  const emailInput = page.locator('input[name="identifier"], input[type="email"], input[placeholder*="email" i], input[placeholder*="Email" i]').first();
+  const currentUrl = page.url();
+  addLog(`After navigation URL: ${currentUrl}`);
+
+  if (currentUrl.includes('/dashboard')) {
+    addLog('Logged in successfully via cookie', 'success');
+    return;
+  }
+
+  if (usedCookie) {
+    addLog('Cookie auth failed, trying email/password login...', 'warn');
+  }
+
+  addLog('Navigating to login page...');
+  await page.goto('https://accounts.seedloaf.com/sign-in', { waitUntil: 'load', timeout: 45000 });
+  await page.waitForTimeout(5000);
+
+  const title = await page.title();
+  addLog(`Login page title: ${title}`);
+  if (title.includes('Just a moment') || title.includes('Checking')) {
+    throw new Error('Cloudflare is blocking access. Please update SEEDLOAF_SESSION_COOKIE.');
+  }
+
+  addLog('Waiting for login form...');
+  const emailInput = page.locator('input[name="identifier"], input[type="email"], input[placeholder*="email" i]').first();
   await emailInput.waitFor({ state: 'visible', timeout: 20000 });
-  await page.screenshot({ path: '/tmp/seedloaf-login-form.png' });
 
   addLog('Filling in email...');
   await emailInput.fill(process.env.SEEDLOAF_EMAIL || '');
@@ -202,7 +243,7 @@ async function resetServer() {
     });
     const page = await context.newPage();
 
-    await signIn(page);
+    await signIn(page, context);
     await navigateToWorld(page);
 
     const stopped = await stopServer(page);
