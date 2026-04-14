@@ -1,6 +1,7 @@
 [phases.setup]
 nixPkgs = [
   "chromium",
+  "xorg.xorgserver",
   "nss",
   "nspr",
   "fontconfig",
@@ -28,4 +29,4 @@ nixPkgs = [
 cmds = ["npm install"]
 
 [start]
-cmd = "node server.js"
+cmd = "bash start.sh"
