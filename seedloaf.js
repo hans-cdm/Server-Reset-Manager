@@ -36,26 +36,29 @@ async function launchBrowser() {
 
 async function signIn(page) {
   addLog('Navigating to Seedloaf login...');
-  await page.goto('https://accounts.seedloaf.com/sign-in', { waitUntil: 'networkidle', timeout: 30000 });
+  await page.goto('https://accounts.seedloaf.com/sign-in', { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.waitForTimeout(2000);
 
   addLog('Filling in email...');
+  await page.waitForSelector('input[name="identifier"]', { timeout: 15000 });
   await page.fill('input[name="identifier"]', process.env.SEEDLOAF_EMAIL || '');
   await page.press('input[name="identifier"]', 'Enter');
 
   await page.waitForTimeout(2000);
 
   addLog('Filling in password...');
-  await page.waitForSelector('input[name="password"]', { timeout: 10000 });
+  await page.waitForSelector('input[name="password"]', { timeout: 15000 });
   await page.fill('input[name="password"]', process.env.SEEDLOAF_PASSWORD || '');
   await page.press('input[name="password"]', 'Enter');
 
   addLog('Waiting for dashboard...');
-  await page.waitForURL(`${SEEDLOAF_URL}/dashboard**`, { timeout: 30000 });
+  await page.waitForURL(`${SEEDLOAF_URL}/dashboard**`, { timeout: 45000 });
   addLog('Logged in successfully', 'success');
 }
 
 async function getServerStatus(page) {
-  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'networkidle', timeout: 30000 });
+  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.waitForTimeout(2000);
   const content = await page.content();
 
   if (content.includes(WORLD_NAME)) {
@@ -68,24 +71,24 @@ async function getServerStatus(page) {
 
 async function navigateToWorld(page) {
   addLog(`Navigating to dashboard to find world: ${WORLD_NAME}...`);
-  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.waitForTimeout(2000);
+  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.waitForTimeout(3000);
   await page.screenshot({ path: '/tmp/seedloaf-dashboard.png' });
 
   const worldLink = page.locator(`a:has-text("${WORLD_NAME}"), [href*="${WORLD_NAME}"]`).first();
-  if (await worldLink.isVisible({ timeout: 5000 }).catch(() => false)) {
+  if (await worldLink.isVisible({ timeout: 8000 }).catch(() => false)) {
     addLog(`Found world link, clicking...`);
     await worldLink.click();
-    await page.waitForLoadState('networkidle', { timeout: 15000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 20000 });
   } else {
-    addLog(`World link not found by name, dumping page URL: ${page.url()}`, 'warn');
+    addLog(`World link not found by name, dumping links...`, 'warn');
     const html = await page.content();
     const links = html.match(/href="[^"]*"/g) || [];
     addLog(`Page links: ${links.slice(0, 20).join(', ')}`, 'info');
   }
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(3000);
   await page.screenshot({ path: '/tmp/seedloaf-world.png' });
-  addLog(`Current URL: ${page.url()}`);
+  addLog(`Current URL after navigate: ${page.url()}`);
 }
 
 async function clickButton(page, labels) {
