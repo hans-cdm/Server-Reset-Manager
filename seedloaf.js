@@ -21,27 +21,44 @@ function addLog(msg, type = 'info') {
 }
 
 async function launchBrowser() {
+  const isHeadless = !process.env.DISPLAY;
+  addLog(`Launching browser (headless: ${isHeadless}, DISPLAY: ${process.env.DISPLAY || 'none'})`);
   return chromium.launch({
     executablePath: CHROMIUM_PATH,
-    headless: true,
+    headless: isHeadless,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--single-process',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--window-size=1280,800',
     ],
   });
 }
 
 async function signIn(page) {
   addLog('Navigating to Seedloaf login...');
-  await page.goto('https://accounts.seedloaf.com/sign-in', { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.goto('https://accounts.seedloaf.com/sign-in', { waitUntil: 'load', timeout: 45000 });
+
+  addLog('Waiting for Cloudflare challenge to pass...');
+  for (let i = 0; i < 12; i++) {
+    await page.waitForTimeout(3000);
+    const title = await page.title();
+    addLog(`Page title (${i * 3}s): ${title}`);
+    if (!title.includes('Just a moment') && !title.includes('Checking')) break;
+  }
+  await page.screenshot({ path: '/tmp/seedloaf-login.png' });
+  addLog(`Login page URL: ${page.url()}`);
+  const finalTitle = await page.title();
+  addLog(`Final page title: ${finalTitle}`);
 
   addLog('Waiting for login form to render...');
   const emailInput = page.locator('input[name="identifier"], input[type="email"], input[placeholder*="email" i], input[placeholder*="Email" i]').first();
-  await emailInput.waitFor({ state: 'visible', timeout: 30000 });
-  await page.screenshot({ path: '/tmp/seedloaf-login.png' });
+  await emailInput.waitFor({ state: 'visible', timeout: 20000 });
+  await page.screenshot({ path: '/tmp/seedloaf-login-form.png' });
 
   addLog('Filling in email...');
   await emailInput.fill(process.env.SEEDLOAF_EMAIL || '');
@@ -74,21 +91,34 @@ async function getServerStatus(page) {
 
 async function navigateToWorld(page) {
   addLog(`Navigating to dashboard to find world: ${WORLD_NAME}...`);
-  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'load', timeout: 45000 });
   await page.waitForTimeout(3000);
   await page.screenshot({ path: '/tmp/seedloaf-dashboard.png' });
 
-  const worldLink = page.locator(`a:has-text("${WORLD_NAME}"), [href*="${WORLD_NAME}"]`).first();
-  if (await worldLink.isVisible({ timeout: 8000 }).catch(() => false)) {
-    addLog(`Found world link, clicking...`);
-    await worldLink.click();
-    await page.waitForLoadState('domcontentloaded', { timeout: 20000 });
+  const html = await page.content();
+
+  // Try to find world by name first
+  let worldLink = page.locator(`a:has-text("${WORLD_NAME}")`).first();
+  let found = await worldLink.isVisible({ timeout: 3000 }).catch(() => false);
+
+  // If not found by name, find any server management link (UUID-based dashboard link)
+  if (!found) {
+    addLog(`World not found by name, looking for server management link...`, 'warn');
+    const uuidLinkMatch = html.match(/href="(\/dashboard\/[a-f0-9-]{36}[^"]*)"/i);
+    if (uuidLinkMatch) {
+      const targetUrl = `${SEEDLOAF_URL}${uuidLinkMatch[1]}`;
+      addLog(`Found server link: ${targetUrl}`);
+      await page.goto(targetUrl, { waitUntil: 'load', timeout: 45000 });
+      found = true;
+    } else {
+      addLog(`No server link found at all`, 'error');
+    }
   } else {
-    addLog(`World link not found by name, dumping links...`, 'warn');
-    const html = await page.content();
-    const links = html.match(/href="[^"]*"/g) || [];
-    addLog(`Page links: ${links.slice(0, 20).join(', ')}`, 'info');
+    addLog(`Found world link by name, clicking...`);
+    await worldLink.click();
+    await page.waitForLoadState('load', { timeout: 20000 });
   }
+
   await page.waitForTimeout(3000);
   await page.screenshot({ path: '/tmp/seedloaf-world.png' });
   addLog(`Current URL after navigate: ${page.url()}`);
@@ -159,7 +189,16 @@ async function resetServer() {
   try {
     browser = await launchBrowser();
     const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 800 },
+      locale: 'en-US',
+      timezoneId: 'America/New_York',
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      window.chrome = { runtime: {} };
     });
     const page = await context.newPage();
 
