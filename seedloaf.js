@@ -37,19 +37,22 @@ async function launchBrowser() {
 async function signIn(page) {
   addLog('Navigating to Seedloaf login...');
   await page.goto('https://accounts.seedloaf.com/sign-in', { waitUntil: 'domcontentloaded', timeout: 45000 });
-  await page.waitForTimeout(2000);
+
+  addLog('Waiting for login form to render...');
+  const emailInput = page.locator('input[name="identifier"], input[type="email"], input[placeholder*="email" i], input[placeholder*="Email" i]').first();
+  await emailInput.waitFor({ state: 'visible', timeout: 30000 });
+  await page.screenshot({ path: '/tmp/seedloaf-login.png' });
 
   addLog('Filling in email...');
-  await page.waitForSelector('input[name="identifier"]', { timeout: 15000 });
-  await page.fill('input[name="identifier"]', process.env.SEEDLOAF_EMAIL || '');
-  await page.press('input[name="identifier"]', 'Enter');
-
-  await page.waitForTimeout(2000);
+  await emailInput.fill(process.env.SEEDLOAF_EMAIL || '');
+  await emailInput.press('Enter');
+  await page.waitForTimeout(2500);
 
   addLog('Filling in password...');
-  await page.waitForSelector('input[name="password"]', { timeout: 15000 });
-  await page.fill('input[name="password"]', process.env.SEEDLOAF_PASSWORD || '');
-  await page.press('input[name="password"]', 'Enter');
+  const passwordInput = page.locator('input[name="password"], input[type="password"]').first();
+  await passwordInput.waitFor({ state: 'visible', timeout: 15000 });
+  await passwordInput.fill(process.env.SEEDLOAF_PASSWORD || '');
+  await passwordInput.press('Enter');
 
   addLog('Waiting for dashboard...');
   await page.waitForURL(`${SEEDLOAF_URL}/dashboard**`, { timeout: 45000 });
