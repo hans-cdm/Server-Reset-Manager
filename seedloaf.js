@@ -1,5 +1,7 @@
 const { chromium } = require('playwright-core');
 const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const CHROMIUM_PATH = (() => {
   try { return execSync('which chromium').toString().trim(); }
@@ -7,6 +9,7 @@ const CHROMIUM_PATH = (() => {
 })();
 const SEEDLOAF_URL  = 'https://seedloaf.com';
 const WORLD_NAME    = 'serahdah';
+const COOKIES_FILE  = path.join('/tmp', 'seedloaf-state.json');
 
 let log = [];
 let currentStatus = 'idle';
@@ -18,6 +21,32 @@ function addLog(msg, type = 'info') {
   log.unshift(entry);
   if (log.length > 100) log.pop();
   console.log(`[seedloaf][${type}] ${msg}`);
+}
+
+function loadStoredState() {
+  try {
+    if (fs.existsSync(COOKIES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(COOKIES_FILE, 'utf8'));
+      const age = Date.now() - (data.savedAt || 0);
+      if (age < 23 * 60 * 60 * 1000) {
+        addLog(`Loaded saved browser state (${Math.round(age / 60000)}m old)`);
+        return data.state;
+      }
+      addLog('Saved state too old (>23h), will login fresh');
+    }
+  } catch (e) {
+    addLog(`Could not load saved state: ${e.message}`, 'warn');
+  }
+  return null;
+}
+
+function saveStoredState(state) {
+  try {
+    fs.writeFileSync(COOKIES_FILE, JSON.stringify({ savedAt: Date.now(), state }));
+    addLog('Browser state saved for future sessions', 'success');
+  } catch (e) {
+    addLog(`Could not save browser state: ${e.message}`, 'warn');
+  }
 }
 
 async function launchBrowser() {
@@ -39,54 +68,27 @@ async function launchBrowser() {
   });
 }
 
-async function signInWithCookie(context) {
-  const sessionCookie = process.env.SEEDLOAF_SESSION_COOKIE;
-  if (!sessionCookie) return false;
-
-  addLog('Using saved session cookie to authenticate...');
-  await context.addCookies([
-    {
-      name: '__session',
-      value: sessionCookie,
-      domain: 'seedloaf.com',
-      path: '/',
-      httpOnly: true,
-      secure: true,
-      sameSite: 'None',
-    },
-    {
-      name: '__session',
-      value: sessionCookie,
-      domain: '.seedloaf.com',
-      path: '/',
-      httpOnly: true,
-      secure: true,
-      sameSite: 'None',
-    },
-  ]);
-  return true;
+async function createContext(browser, storedState) {
+  const contextOptions = {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 800 },
+    locale: 'en-US',
+    timezoneId: 'America/New_York',
+  };
+  if (storedState) {
+    contextOptions.storageState = storedState;
+  }
+  const context = await browser.newContext(contextOptions);
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    window.chrome = { runtime: {} };
+  });
+  return context;
 }
 
-async function signIn(page, context) {
-  const usedCookie = await signInWithCookie(context);
-
-  addLog('Navigating to Seedloaf dashboard...');
-  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'load', timeout: 45000 });
-  await page.waitForTimeout(3000);
-  await page.screenshot({ path: '/tmp/seedloaf-login.png' });
-
-  const currentUrl = page.url();
-  addLog(`After navigation URL: ${currentUrl}`);
-
-  if (currentUrl.includes('/dashboard')) {
-    addLog('Logged in successfully via cookie', 'success');
-    return;
-  }
-
-  if (usedCookie) {
-    addLog('Cookie auth failed, trying email/password login...', 'warn');
-  }
-
+async function loginWithEmailPassword(page) {
   addLog('Navigating to login page...');
   await page.goto('https://accounts.seedloaf.com/sign-in', { waitUntil: 'load', timeout: 45000 });
   await page.waitForTimeout(5000);
@@ -94,7 +96,7 @@ async function signIn(page, context) {
   const title = await page.title();
   addLog(`Login page title: ${title}`);
   if (title.includes('Just a moment') || title.includes('Checking')) {
-    throw new Error('Cloudflare is blocking access. Please update SEEDLOAF_SESSION_COOKIE.');
+    throw new Error('Cloudflare blocking login page. Saved session has expired — please reset it via the app.');
   }
 
   addLog('Waiting for login form...');
@@ -112,57 +114,60 @@ async function signIn(page, context) {
   await passwordInput.fill(process.env.SEEDLOAF_PASSWORD || '');
   await passwordInput.press('Enter');
 
-  addLog('Waiting for dashboard...');
+  addLog('Waiting for dashboard after login...');
   await page.waitForURL(`${SEEDLOAF_URL}/dashboard**`, { timeout: 45000 });
-  addLog('Logged in successfully', 'success');
+  addLog('Logged in successfully via email/password', 'success');
 }
 
-async function getServerStatus(page) {
-  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 45000 });
-  await page.waitForTimeout(2000);
-  const content = await page.content();
+async function signIn(page, context) {
+  addLog('Navigating to Seedloaf dashboard...');
+  await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'load', timeout: 45000 });
+  await page.waitForTimeout(4000);
+  await page.screenshot({ path: '/tmp/seedloaf-login.png' });
 
-  if (content.includes(WORLD_NAME)) {
-    addLog(`Found world: ${WORLD_NAME}`);
-    return true;
+  const currentUrl = page.url();
+  addLog(`URL after navigation: ${currentUrl}`);
+
+  if (currentUrl.includes('/dashboard') && !currentUrl.includes('sign-in')) {
+    addLog('Authenticated via saved session', 'success');
+    return;
   }
-  addLog(`World "${WORLD_NAME}" not found on dashboard`, 'warn');
-  return false;
+
+  addLog('Session expired or missing, trying email/password login...', 'warn');
+  fs.existsSync(COOKIES_FILE) && fs.unlinkSync(COOKIES_FILE);
+  await loginWithEmailPassword(page);
 }
 
 async function navigateToWorld(page) {
-  addLog(`Navigating to dashboard to find world: ${WORLD_NAME}...`);
+  addLog(`Looking for world: ${WORLD_NAME}...`);
   await page.goto(`${SEEDLOAF_URL}/dashboard`, { waitUntil: 'load', timeout: 45000 });
   await page.waitForTimeout(3000);
   await page.screenshot({ path: '/tmp/seedloaf-dashboard.png' });
 
   const html = await page.content();
 
-  // Try to find world by name first
   let worldLink = page.locator(`a:has-text("${WORLD_NAME}")`).first();
   let found = await worldLink.isVisible({ timeout: 3000 }).catch(() => false);
 
-  // If not found by name, find any server management link (UUID-based dashboard link)
   if (!found) {
-    addLog(`World not found by name, looking for server management link...`, 'warn');
-    const uuidLinkMatch = html.match(/href="(\/dashboard\/[a-f0-9-]{36}[^"]*)"/i);
-    if (uuidLinkMatch) {
-      const targetUrl = `${SEEDLOAF_URL}${uuidLinkMatch[1]}`;
+    addLog(`World not found by name, looking for UUID-based server link...`, 'warn');
+    const uuidMatch = html.match(/href="(\/dashboard\/[a-f0-9-]{36}[^"]*)"/i);
+    if (uuidMatch) {
+      const targetUrl = `${SEEDLOAF_URL}${uuidMatch[1]}`;
       addLog(`Found server link: ${targetUrl}`);
       await page.goto(targetUrl, { waitUntil: 'load', timeout: 45000 });
-      found = true;
     } else {
-      addLog(`No server link found at all`, 'error');
+      addLog(`No server link found`, 'error');
     }
   } else {
-    addLog(`Found world link by name, clicking...`);
+    addLog(`Found world link, clicking...`);
     await worldLink.click();
     await page.waitForLoadState('load', { timeout: 20000 });
   }
 
   await page.waitForTimeout(3000);
   await page.screenshot({ path: '/tmp/seedloaf-world.png' });
-  addLog(`Current URL after navigate: ${page.url()}`);
+  addLog(`On page: ${page.url()}`);
 }
 
 async function clickButton(page, labels) {
@@ -191,8 +196,8 @@ async function stopServer(page) {
   addLog('Attempting to stop server...');
   const pageContent = await page.content();
   const buttons = pageContent.match(/<button[^>]*>([^<]*)<\/button>/gi) || [];
-  addLog(`Buttons on page: ${buttons.slice(0, 10).join(' | ')}`, 'info');
-  const clicked = await clickButton(page, ['Stop', 'Stop Server', 'Turn Off', 'Shutdown', 'Kill', 'Power Off', 'Restart', 'Delete', 'Terminate', 'Pause']);
+  addLog(`Buttons on page: ${buttons.slice(0, 10).join(' | ')}`);
+  const clicked = await clickButton(page, ['Stop', 'Stop Server', 'Turn Off', 'Shutdown', 'Kill', 'Power Off', 'Restart', 'Terminate', 'Pause']);
   if (clicked) {
     addLog(`Server stop command sent ("${clicked}")`, 'success');
     await page.waitForTimeout(5000);
@@ -229,21 +234,15 @@ async function resetServer() {
   let browser;
   try {
     browser = await launchBrowser();
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 800 },
-      locale: 'en-US',
-      timezoneId: 'America/New_York',
-    });
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-      window.chrome = { runtime: {} };
-    });
+    const storedState = loadStoredState();
+    const context = await createContext(browser, storedState);
     const page = await context.newPage();
 
     await signIn(page, context);
+
+    const newState = await context.storageState();
+    saveStoredState(newState);
+
     await navigateToWorld(page);
 
     const stopped = await stopServer(page);
