@@ -9,7 +9,7 @@ const CHROMIUM_PATH = (() => {
 })();
 const SEEDLOAF_URL  = 'https://seedloaf.com';
 const WORLD_NAME    = 'serahdah';
-const COOKIES_FILE  = path.join('/tmp', 'seedloaf-state.json');
+const COOKIES_FILE  = path.join(__dirname, '.seedloaf-state.json');
 
 let log = [];
 let currentStatus = 'idle';

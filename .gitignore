@@ -3,3 +3,4 @@ node_modules/
 *.log
 .playwright/
 playwright-browsers/
+.seedloaf-state.json
