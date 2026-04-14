@@ -40,13 +40,14 @@ async function signIn(page) {
 
   addLog('Filling in email...');
   await page.fill('input[name="identifier"]', process.env.SEEDLOAF_EMAIL || '');
-  await page.locator('button[type="submit"]:visible').first().click();
+  await page.press('input[name="identifier"]', 'Enter');
 
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(2000);
 
   addLog('Filling in password...');
+  await page.waitForSelector('input[name="password"]', { timeout: 10000 });
   await page.fill('input[name="password"]', process.env.SEEDLOAF_PASSWORD || '');
-  await page.locator('button[type="submit"]:visible').first().click();
+  await page.press('input[name="password"]', 'Enter');
 
   addLog('Waiting for dashboard...');
   await page.waitForURL(`${SEEDLOAF_URL}/dashboard**`, { timeout: 30000 });
